@@ -152,6 +152,8 @@ activemq-data/
 .envrc
 .venv
 env/
+.pytest_cache/
+*.egg-info/
 venv/
 ENV/
 env.bak/

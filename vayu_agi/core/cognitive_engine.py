@@ -11,6 +11,10 @@ from enum import Enum
 from typing import Any
 
 from ..config import VayuConfig
+from ..reasoning.multi_path import MultiPathReasoner
+from ..reasoning.synthesis import SynthesisEngine
+from ..routing.router import CognitiveRouter
+from ..security.privacy import PrivacyGuard, RequestRejected
 
 
 class MentalState(str, Enum):
@@ -55,7 +59,15 @@ class CognitiveResult:
             "synthesis": self.synthesis,
             "confidence": self.confidence,
             "state": self.state.value,
-            "insights": [insight.__dict__ for insight in self.insights],
+            "insights": [
+                {
+                    "mode": insight.mode,
+                    "description": insight.description,
+                    "confidence": insight.confidence,
+                    "evidence": list(insight.evidence),
+                }
+                for insight in self.insights
+            ],
             "corrections": [correction.__dict__ for correction in self.corrections],
             "warnings": list(self.warnings),
         }
@@ -67,6 +79,10 @@ class CognitiveEngine:
     def __init__(self, config: VayuConfig | None = None) -> None:
         self.config = config or VayuConfig()
         self.state = MentalState.DORMANT
+        self.router = CognitiveRouter()
+        self.reasoner = MultiPathReasoner(self.config.cognitive)
+        self.synthesizer = SynthesisEngine()
+        self.guard = PrivacyGuard(self.config.security.max_request_chars, self.config.security.rate_limit_per_minute)
         self._lock = threading.RLock()
         self._total_requests = 0
         self._corrected_requests = 0
@@ -77,14 +93,17 @@ class CognitiveEngine:
 
     def think(self, signal: str, mode: str = "natural") -> CognitiveResult:
         """Analyze a request and run correction before returning its result."""
-        request_id = hashlib.sha256(signal.encode("utf-8")).hexdigest()[:12]
+        request_id = hashlib.sha256((signal if isinstance(signal, str) else repr(signal)).encode("utf-8")).hexdigest()[:12]
         with self._lock:
             self._total_requests += 1
             try:
                 normalized, warnings = self._validate_input(signal)
                 selected_mode = self._normalize_mode(mode)
-                insights = self._generate_insights(normalized, selected_mode)
-                synthesis, confidence = self._synthesize(normalized, insights)
+                paths = self.router.select(selected_mode, normalized)
+                generated = self.reasoner.generate(normalized, paths)
+                synthesis_result = self.synthesizer.combine(normalized, generated)
+                insights = [Insight(item.mode, item.description, item.confidence, item.evidence) for item in generated]
+                synthesis, confidence = synthesis_result.text, synthesis_result.confidence
                 corrections = self._correct(synthesis, confidence, insights)
                 if corrections:
                     self._corrected_requests += 1
@@ -113,13 +132,10 @@ class CognitiveEngine:
             return result
 
     def _validate_input(self, signal: str) -> tuple[str, list[str]]:
-        if not isinstance(signal, str):
-            raise ValueError("signal must be a string")
-        normalized = re.sub(r"\s+", " ", signal).strip()
-        if not normalized:
-            raise ValueError("signal must not be empty")
-        if len(normalized) > self.config.cognitive.max_input_chars:
-            raise ValueError("signal exceeds the configured input limit")
+        try:
+            normalized = self.guard.validate(signal)
+        except RequestRejected as exc:
+            raise ValueError(str(exc)) from exc
         warnings = ["Input was normalized for consistent analysis."] if normalized != signal else []
         return normalized, warnings
 
@@ -128,7 +144,7 @@ class CognitiveEngine:
         if not isinstance(mode, str):
             return "natural"
         mode = mode.strip().lower()
-        return mode if mode in {"natural", "analytical", "creative", "reflective"} else "natural"
+        return mode if mode in {"natural", "analytical", "creative", "intuitive", "transcendent", "reflective"} else "natural"
 
     def _generate_insights(self, signal: str, mode: str) -> list[Insight]:
         words = tuple(dict.fromkeys(re.findall(r"[\w'-]+", signal.lower())))
@@ -155,3 +171,9 @@ class CognitiveEngine:
     def status(self) -> dict[str, Any]:
         with self._lock:
             return {"state": self.state.value, "total_requests": self._total_requests, "corrected_requests": self._corrected_requests, "history_size": len(self._history)}
+
+    def get_status(self) -> dict[str, Any]:
+        return self.status()
+
+    def shutdown(self) -> None:
+        self.state = MentalState.DORMANT

@@ -1,5 +1,6 @@
 """Bounded, observable evolution utilities."""
 
-from .self_improvement import SelfImprovementEngine
+from .capability import Capability, CapabilityEvolver
+from .self_improvement import ImprovementReport, SelfImprovementEngine
 
-__all__ = ["SelfImprovementEngine"]
+__all__ = ["Capability", "CapabilityEvolver", "ImprovementReport", "SelfImprovementEngine"]
